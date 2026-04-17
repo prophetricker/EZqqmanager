@@ -1,0 +1,44 @@
+# NapCat runtime (too large, install separately)
+napcat/
+!napcat/config/
+!napcat/config/onebot11.json
+!napcat/config/webui.json
+!napcat/start.bat
+!napcat/qqnt.json
+
+# Compiled launcher
+EZqqmanager.exe
+
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
