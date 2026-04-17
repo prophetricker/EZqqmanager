@@ -1,129 +1,121 @@
-# EZqqmanager 使用说明
+# EZqqmanager
 
-自动定时发送 QQ 群消息的工具。在飞书多维表格里填好消息内容和发送时间，程序会自动在指定时间把消息发到 QQ 群，并回写发送状态。
+本项目用于在本地电脑上定时发送 QQ 群消息：
+- 数据源：飞书多维表格（Bitable）
+- 执行端：本地 NapCat
+- 调度方式：每分钟轮询一次飞书，命中任务即发送
 
----
+## 你要准备什么
 
-## 一、环境准备
-
-### 1. 安装 Python
-
-1. 打开 https://www.python.org/downloads/
-2. 点击 **Download Python 3.x.x**（选 3.10 或更高版本）
-3. 运行安装包，**务必勾选 "Add Python to PATH"**，然后点 Install Now
-4. 安装完成后，按 `Win+R`，输入 `cmd`，回车，输入 `python --version`，能看到版本号即成功
-
-### 2. 确认 QQ 版本
-
-本工具需要 QQ **9.9.28（版本号 46494）**。
-
-- 打开 QQ → 左上角头像 → 关于 QQ，查看版本号
-- 如果版本不符，请先卸载当前 QQ，再安装对应版本
-
-### 3. 确认 QQ 安装路径
-
-默认路径是 `D:\QQNT\QQ.exe`。如果你的 QQ 装在其他位置，记下完整路径（后面配置会用到）。
-
-### 4. 安装 NapCat
-
-NapCat 是本工具的 QQ 消息发送后端，需要单独下载安装。
-
-1. 打开 https://github.com/NapNeko/NapCatQQ/releases，下载最新版 `NapCat.Shell.Windows.OneKey.zip`
-2. 解压后运行 `NapCatInstaller.exe`，按提示完成安装
-3. 安装完成后，将 `NapCat.Shell` 目录下的所有文件复制到本项目的 `napcat\` 文件夹中
+1. Python 3.10+
+2. 可正常运行的 NapCat（放在项目 `napcat/` 目录）
+3. 飞书应用凭证（`App ID`、`App Secret`）
+4. 飞书多维表格的 `app_token` 和 `table_id`
 
 ---
 
-## 二、首次配置
+## 三步快启（推荐）
 
-### 1. 复制配置文件
+### 1. 安装依赖
 
-在项目文件夹里找到 `.env.example`，复制一份，重命名为 `.env`。
-
-> 提示：`.env` 文件默认是隐藏的，如果看不到，在文件夹里点 **查看 → 显示隐藏的项目**。
-
-### 2. 用记事本打开 `.env`，填写以下内容
-
-```
-# QQ 路径（改成你电脑上 QQ.exe 的完整路径）
-QQ_PATH=D:\QQNT\QQ.exe
-
-# 飞书应用配置（从飞书开放平台获取）
-FEISHU_APP_ID=你的AppID
-FEISHU_APP_SECRET=你的AppSecret
-FEISHU_BITABLE_APP_TOKEN=多维表格的AppToken
-FEISHU_TABLE_ID=表格ID
-
-# 以下保持默认即可
-FEISHU_API_BASE=https://open.feishu.cn
-NAPCAT_API_BASE=http://127.0.0.1:3000
-NAPCAT_API_PATH=/send_group_msg
-POLL_INTERVAL_MINUTES=1
-FIELD_GROUP_ID=群号
-FIELD_CONTENT=公告内容
-FIELD_IMAGE=公告图片链接
-FIELD_PLAN_TIME=计划发送时间
-FIELD_STATUS=执行状态
-```
-
-填完后保存。
-
----
-
-## 三、安装依赖
-
-1. 在项目文件夹的空白处，按住 `Shift` 键右键，选择 **在此处打开命令窗口**（或 PowerShell）
-2. 输入以下命令，回车：
-
-```
+```powershell
+cd D:\MyProject\EZqqmanager
 pip install -r requirements.txt
 ```
 
-等待安装完成（看到 Successfully installed 即可）。
+### 2. 生成配置
+
+如果没有 `.env`，启动器会自动从 `.env.example` 生成。
+你也可以手动复制：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+### 3. 启动向导
+
+```powershell
+python launcher.py
+```
+
+启动后菜单：
+- `1` 一键启动（推荐）
+- `2` 配置向导
+- `3` 运行自检（doctor）
+- `4` 退出
+
+建议首次先 `2` 填写配置，再 `3` 自检，最后 `1` 一键启动。
 
 ---
 
-## 四、启动步骤
+## 配置项说明（最少必填）
 
-> **重要**：请始终使用 `EZqqmanager.exe` 启动，不要直接运行 `napcat\start.bat` 或 `main.py`。
+`.env` 最少需要这 4 项：
 
-1. 从 [Releases](https://github.com/prophetricker/EZqqmanager/releases) 下载 `EZqqmanager.exe`，放到项目根目录
-2. 右键 `EZqqmanager.exe` → **以管理员身份运行**
-3. 选择登录方式：
-   - `1` 快速登录（曾经登录过，无需扫码）
-   - `2` 账号密码登录（需在 `.env` 填写 `QQ_ACCOUNT` 和 `QQ_PASSWORD`）
-   - `3` 扫码登录（用手机 QQ 扫描弹出的二维码）
-4. 登录成功后程序自动开始轮询飞书任务
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_BITABLE_APP_TOKEN`
+- `FEISHU_TABLE_ID`
 
----
-
-## 五、日常使用
-
-程序运行后，只需在飞书多维表格里操作：
-
-| 字段 | 说明 |
-|------|------|
-| 群号 | QQ 群的群号（纯数字） |
-| 公告内容 | 要发送的文字内容 |
-| 公告图片链接 | 可选，填图片 URL |
-| 计划发送时间 | 指定发送时间 |
-| 执行状态 | 填 `待发送`，发送后自动改为 `已发送` |
+其余项都可先保持默认。
 
 ---
 
-## 六、常见问题
+## 自检能力（重点）
 
-**Q：start.bat 运行后立刻关闭？**
-A：右键选"以管理员身份运行"，不要直接双击。
+`launcher.py` 的 doctor 会检查：
+- 配置是否缺失/占位符
+- 飞书鉴权是否通过
+- 多维表格是否可访问
+- NapCat 文件是否齐全
+- NapCat API 是否连通（`/get_login_info`）
 
-**Q：提示"文件已损坏，请重新安装QQ"？**
-A：QQ 版本不对，需要安装 9.9.28（46494）版本。
+命令行单独执行：
 
-**Q：扫码后提示登录失败？**
-A：确保手机 QQ 和电脑 QQ 是同一个账号，重新运行 start.bat 获取新二维码。
+```powershell
+python launcher.py --doctor
+```
 
-**Q：main.py 报错找不到模块？**
-A：重新执行 `pip install -r requirements.txt`。
+仅运行配置向导：
 
-**Q：消息没有发出去？**
-A：确认 napcat 的 start.bat 窗口还开着，且端口 3000 正常（可在浏览器访问 `http://127.0.0.1:3000/get_login_info` 验证）。
+```powershell
+python launcher.py --setup
+```
+
+---
+
+## 运行主程序
+
+一键启动会在自检通过后自动拉起 `main.py`。
+你也可以手动运行：
+
+```powershell
+python main.py
+```
+
+---
+
+## 常见问题
+
+### 1) 飞书鉴权失败 `code=10003 invalid param`
+
+通常是 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 错误或带了多余字符（空格、引号、占位符）。
+
+### 2) NapCat 端口不通
+
+确认：
+- NapCat 已启动
+- QQ 未崩溃
+- `NAPCAT_API_BASE` 端口与你实际 OneBot 端口一致
+
+### 3) 发送状态回写失败（403）
+
+是飞书权限问题：给应用补齐多维表格读写权限并重新授权。
+
+---
+
+## 安全提示
+
+- `.env` 包含敏感信息，不要上传到 GitHub。
+- `.env.example` 只放占位符。
+
