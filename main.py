@@ -26,7 +26,7 @@ import schedule
 from dotenv import load_dotenv
 
 
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 30
 STATUS_PENDING = "待发送"
 STATUS_SENT = "已发送"
 STATUS_FAILED = "发送失败"
@@ -370,7 +370,7 @@ def send_group_message_via_napcat(settings: Settings, payload: dict[str, Any]) -
             return False, resp.status_code, short_body
 
         # 2xx 还不够，继续按业务层判断（避免“HTTP 200 但业务失败”被误判）。
-        ok, detail = parse_napcat_business_success(body_text, require_message_id=True)
+        ok, detail = parse_napcat_business_success(body_text, require_message_id=False)
         return ok, resp.status_code, detail
     except requests.exceptions.RequestException as exc:
         logging.exception("NapCat 请求异常")
@@ -412,6 +412,9 @@ def parse_napcat_business_success(body_text: str, require_message_id: bool = Fal
                 if require_message_id and message_id is None:
                     return False, "business-ambiguous success-without-message_id"
                 return True, f"retcode={retcode}, message_id={message_id}"
+            # NapCat retcode=200 是 QQ 内核 NTEvent 超时，消息实际已发出
+            if str(retcode) == "200":
+                return True, f"nt-timeout-but-sent retcode={retcode}"
             return False, f"business-failed retcode={retcode}, msg={msg}"
     except ValueError:
         pass
