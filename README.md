@@ -85,24 +85,15 @@ pip install -r requirements.txt
 
 ## 四、启动步骤
 
-### 第一步：启动 NapCat（QQ 后台服务）
+> **重要**：请始终使用 `EZqqmanager.exe` 启动，不要直接运行 `napcat\start.bat` 或 `main.py`。
 
-1. 进入项目文件夹下的 `napcat` 子文件夹
-2. 右键 `start.bat` → **以管理员身份运行**
-3. 首次运行会显示一个二维码，用**手机 QQ** 扫码登录
-4. 看到 `WebUi User Panel Url: http://127.0.0.1:6099/webui` 说明启动成功
-5. **保持这个窗口开着，不要关闭**
-
-### 第二步：启动主程序
-
-1. 回到项目根目录
-2. 双击 `main.py`，或在命令窗口输入：
-
-```
-python main.py
-```
-
-3. 看到 `开始轮询` 字样即表示运行正常
+1. 从 [Releases](https://github.com/prophetricker/EZqqmanager/releases) 下载 `EZqqmanager.exe`，放到项目根目录
+2. 右键 `EZqqmanager.exe` → **以管理员身份运行**
+3. 选择登录方式：
+   - `1` 快速登录（曾经登录过，无需扫码）
+   - `2` 账号密码登录（需在 `.env` 填写 `QQ_ACCOUNT` 和 `QQ_PASSWORD`）
+   - `3` 扫码登录（用手机 QQ 扫描弹出的二维码）
+4. 登录成功后程序自动开始轮询飞书任务
 
 ---
 

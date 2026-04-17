@@ -43,6 +43,12 @@ def start_napcat(mode: str):
     env = os.environ.copy()
     env["QQ_PATH"] = QQ_PATH
 
+    # 动态生成 loadNapCat.js，确保路径正确
+    napcat_dir = BASE_DIR / "napcat"
+    napcat_mjs = napcat_dir / "napcat.mjs"
+    load_js = napcat_dir / "loadNapCat.js"
+    load_js.write_text(f"(async () => {{await import('file:///{napcat_mjs.as_posix()}')}})()\n", encoding="utf-8")
+
     if mode == "1":
         env["NAPCAT_QUICK_ACCOUNT"] = QQ_ACCOUNT
     elif mode == "2":
