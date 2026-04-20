@@ -215,13 +215,82 @@ def find_napcat_launcher() -> Path | None:
     return None
 
 
-def discover_napcat_ports_from_config() -> list[int]:
+def get_onebot11_config_files() -> list[Path]:
     config_dir = NAPCAT_DIR / "config"
     if not config_dir.exists():
         return []
+    files = sorted(config_dir.glob("onebot11*.json"))
+    if files:
+        return files
+    return [config_dir / "onebot11.json"]
 
+
+def build_default_http_server(port: int) -> dict:
+    return {
+        "name": "http-server",
+        "enable": True,
+        "port": int(port),
+        "host": "127.0.0.1",
+        "enableCors": True,
+        "enableWebsocket": False,
+        "messagePostFormat": "array",
+        "token": "",
+        "debug": False,
+    }
+
+
+def ensure_napcat_http_server_config(env: Dict[str, str]) -> None:
+    config_files = get_onebot11_config_files()
+    if not config_files:
+        return
+
+    api_base = env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"])
+    default_port = parse_port_from_api_base(api_base) or 3000
+    changed_files: list[str] = []
+
+    for file_path in config_files:
+        data: dict = {}
+        if file_path.exists():
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8"))
+            except Exception:
+                # 配置坏掉时，重建最小结构，确保 HTTP API 可监听。
+                data = {}
+
+        network = data.get("network")
+        if not isinstance(network, dict):
+            network = {}
+
+        servers = network.get("httpServers")
+        has_enabled_http_server = False
+        if isinstance(servers, list):
+            for item in servers:
+                if not isinstance(item, dict):
+                    continue
+                port = item.get("port")
+                if item.get("enable") is False:
+                    continue
+                if isinstance(port, int) and 1 <= port <= 65535:
+                    has_enabled_http_server = True
+                    break
+
+        if has_enabled_http_server:
+            continue
+
+        network["httpServers"] = [build_default_http_server(default_port)]
+        data["network"] = network
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        changed_files.append(file_path.name)
+
+    if changed_files:
+        names = ", ".join(changed_files)
+        print(f"[提示] 已自动修复 NapCat HTTP 配置: {names}（127.0.0.1:{default_port}）")
+
+
+def discover_napcat_ports_from_config() -> list[int]:
     ports: list[int] = []
-    for file_path in sorted(config_dir.glob("onebot11*.json")):
+    for file_path in get_onebot11_config_files():
         try:
             data = json.loads(file_path.read_text(encoding="utf-8"))
         except Exception:
@@ -436,6 +505,7 @@ def print_results(results: list[CheckResult]) -> bool:
 
 
 def run_doctor(env: Dict[str, str], include_napcat_api: bool = True) -> Tuple[bool, str]:
+    ensure_napcat_http_server_config(env)
     results: list[CheckResult] = []
 
     cfg_result = check_required_env(env)
@@ -470,6 +540,7 @@ def choose_login_mode() -> str:
 
 
 def start_napcat(env: Dict[str, str], mode: str) -> bool:
+    ensure_napcat_http_server_config(env)
     qq_path = env.get("QQ_PATH", "")
 
     runtime_env = os.environ.copy()
