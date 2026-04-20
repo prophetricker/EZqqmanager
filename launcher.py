@@ -616,6 +616,37 @@ def start_napcat(env: Dict[str, str], mode: str) -> bool:
     print(f"NapCat ????{detected_base}??")
     return True
 
+def _env_flag_enabled(value: str, default: bool = True) -> bool:
+    text = (value or "").strip().lower()
+    if not text:
+        return default
+    return text not in {"0", "false", "no", "off"}
+
+
+def ensure_napcat_quiet_mode(env: Dict[str, str]) -> None:
+    if not _env_flag_enabled(env.get("NAPCAT_QUIET_LOG", "1"), default=True):
+        return
+    path = NAPCAT_DIR / "config" / "napcat.json"
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    changed = False
+    if data.get("consoleLog") is not False:
+        data["consoleLog"] = False
+        changed = True
+    if data.get("consoleLogLevel") != "error":
+        data["consoleLogLevel"] = "error"
+        changed = True
+
+    if changed:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("[INFO] NapCat console logging disabled for cleaner terminal output")
+
+
 def build_napcat_runtime_env_v2(env: Dict[str, str], mode: str) -> Dict[str, str]:
     qq_path = env.get("QQ_PATH", "")
     runtime_env = os.environ.copy()
@@ -644,7 +675,11 @@ def build_napcat_runtime_env_v2(env: Dict[str, str], mode: str) -> Dict[str, str
 def spawn_napcat_process_v2(command: list[str], runtime_env: Dict[str, str]) -> None:
     creation_flags = 0
     if os.name == "nt":
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        creation_flags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
     with open(os.devnull, "w", encoding="utf-8", errors="ignore") as devnull:
         subprocess.Popen(
             command,
@@ -657,8 +692,40 @@ def spawn_napcat_process_v2(command: list[str], runtime_env: Dict[str, str]) -> 
         )
 
 
+def build_attempt_id(name: str, command: list[str]) -> str:
+    if len(command) >= 3 and command[0].lower() == "cmd" and command[1] == "/c":
+        return f"bat:{name.lower()}"
+    return f"exec:{name.lower()}"
+
+
+def prioritize_attempts(
+    attempts: list[dict[str, object]], last_launcher: str
+) -> list[dict[str, object]]:
+    if not last_launcher:
+        return attempts
+    preferred: list[dict[str, object]] = []
+    remaining: list[dict[str, object]] = []
+    for item in attempts:
+        if item.get("id") == last_launcher:
+            preferred.append(item)
+        else:
+            remaining.append(item)
+    return preferred + remaining
+
+
+def remember_successful_launcher(env: Dict[str, str], launcher_id: str) -> None:
+    if not launcher_id:
+        return
+    if env.get("NAPCAT_LAST_LAUNCHER", "").strip() == launcher_id:
+        return
+    save_env_value("NAPCAT_LAST_LAUNCHER", launcher_id)
+    env["NAPCAT_LAST_LAUNCHER"] = launcher_id
+    print(f"[INFO] remembered successful launcher: {launcher_id}")
+
+
 def start_napcat_v2(env: Dict[str, str], mode: str) -> bool:
     ensure_napcat_http_server_config(env)
+    ensure_napcat_quiet_mode(env)
     qq_path = env.get("QQ_PATH", "")
     runtime_env = build_napcat_runtime_env_v2(env, mode)
 
@@ -671,22 +738,49 @@ def start_napcat_v2(env: Dict[str, str], mode: str) -> bool:
     api_bases = build_napcat_api_bases(env)
     ports = [p for p in (parse_port_from_api_base(base) for base in api_bases) if p]
 
-    attempts: list[tuple[str, list[str], int]] = []
+    attempts: list[dict[str, object]] = []
     for launcher in launchers:
-        attempts.append((launcher.name, ["cmd", "/c", str(launcher)], 60))
+        command = ["cmd", "/c", str(launcher)]
+        attempts.append(
+            {
+                "id": build_attempt_id(launcher.name, command),
+                "name": launcher.name,
+                "command": command,
+                "timeout": 60,
+            }
+        )
 
     boot = NAPCAT_DIR / "NapCatWinBootMain.exe"
     inject = NAPCAT_DIR / "NapCatWinBootHook.dll"
     if boot.exists() and inject.exists() and qq_path:
-        attempts.append(("NapCatWinBootMain.exe", [str(boot), qq_path, str(inject)], 60))
+        command = [str(boot), qq_path, str(inject)]
+        attempts.append(
+            {
+                "id": build_attempt_id("NapCatWinBootMain.exe", command),
+                "name": "NapCatWinBootMain.exe",
+                "command": command,
+                "timeout": 60,
+            }
+        )
+
+    last_launcher = env.get("NAPCAT_LAST_LAUNCHER", "").strip()
+    attempts = prioritize_attempts(attempts, last_launcher)
+    if last_launcher:
+        print(f"[INFO] prefer last successful launcher: {last_launcher}")
 
     print("\n[INFO] starting NapCat ...")
     opened = False
-    for index, (name, command, timeout_seconds) in enumerate(attempts, start=1):
+    successful_launcher_id = ""
+    for index, item in enumerate(attempts, start=1):
+        launcher_id = str(item["id"])
+        name = str(item["name"])
+        command = list(item["command"])  # type: ignore[arg-type]
+        timeout_seconds = int(item["timeout"])
         print(f"[INFO] try launcher {index}/{len(attempts)}: {name}")
         spawn_napcat_process_v2(command, runtime_env)
         if wait_for_any_port("127.0.0.1", ports, timeout=timeout_seconds):
             opened = True
+            successful_launcher_id = launcher_id
             break
         print(f"[WARN] {name} timeout, try next launcher ...")
 
@@ -701,6 +795,7 @@ def start_napcat_v2(env: Dict[str, str], mode: str) -> bool:
         return False
 
     maybe_update_napcat_api_base(env, detected_base)
+    remember_successful_launcher(env, successful_launcher_id)
     print(f"[INFO] NapCat ready: {detected_base}")
     return True
 
