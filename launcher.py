@@ -17,8 +17,8 @@ ENV_PATH = BASE_DIR / ".env"
 ENV_EXAMPLE_PATH = BASE_DIR / ".env.example"
 NAPCAT_DIR = BASE_DIR / "napcat"
 NAPCAT_LAUNCHER_NAMES = (
-    "start.bat",
     "launch.bat",
+    "start.bat",
     "launcher-user.bat",
     "launcher.bat",
 )
@@ -205,14 +205,28 @@ def parse_port_from_api_base(api_base: str) -> int | None:
 
 
 def find_napcat_launcher() -> Path | None:
+    launchers = find_napcat_launchers()
+    if launchers:
+        return launchers[0]
+    return None
+
+
+def find_napcat_launchers() -> list[Path]:
+    found: list[Path] = []
+    seen: set[str] = set()
     for name in NAPCAT_LAUNCHER_NAMES:
         candidate = NAPCAT_DIR / name
         if candidate.exists():
-            return candidate
-    bat_files = sorted(NAPCAT_DIR.glob("*.bat"))
-    if bat_files:
-        return bat_files[0]
-    return None
+            key = str(candidate.resolve()).lower()
+            if key not in seen:
+                found.append(candidate)
+                seen.add(key)
+    for candidate in sorted(NAPCAT_DIR.glob("*.bat")):
+        key = str(candidate.resolve()).lower()
+        if key not in seen:
+            found.append(candidate)
+            seen.add(key)
+    return found
 
 
 def get_onebot11_config_files() -> list[Path]:
@@ -602,6 +616,95 @@ def start_napcat(env: Dict[str, str], mode: str) -> bool:
     print(f"NapCat ????{detected_base}??")
     return True
 
+def build_napcat_runtime_env_v2(env: Dict[str, str], mode: str) -> Dict[str, str]:
+    qq_path = env.get("QQ_PATH", "")
+    runtime_env = os.environ.copy()
+    runtime_env["QQ_PATH"] = qq_path
+    if mode == "1" and env.get("QQ_ACCOUNT"):
+        runtime_env["NAPCAT_QUICK_ACCOUNT"] = env["QQ_ACCOUNT"]
+    if mode == "2":
+        if env.get("QQ_ACCOUNT"):
+            runtime_env["NAPCAT_QUICK_ACCOUNT"] = env["QQ_ACCOUNT"]
+        if env.get("QQ_PASSWORD"):
+            runtime_env["NAPCAT_QUICK_PASSWORD"] = env["QQ_PASSWORD"]
+
+    load_js = NAPCAT_DIR / "loadNapCat.js"
+    napcat_mjs = NAPCAT_DIR / "napcat.mjs"
+    if napcat_mjs.exists():
+        load_js.write_text(f"(async () => {{await import('file:///{napcat_mjs.as_posix()}')}})()\n", encoding="utf-8")
+
+    runtime_env["NAPCAT_PATCH_PACKAGE"] = str(NAPCAT_DIR / "qqnt.json")
+    runtime_env["NAPCAT_LOAD_PATH"] = str(load_js)
+    runtime_env["NAPCAT_INJECT_PATH"] = str(NAPCAT_DIR / "NapCatWinBootHook.dll")
+    runtime_env["NAPCAT_LAUNCHER_PATH"] = str(NAPCAT_DIR / "NapCatWinBootMain.exe")
+    runtime_env["NAPCAT_MAIN_PATH"] = str(napcat_mjs)
+    return runtime_env
+
+
+def spawn_napcat_process_v2(command: list[str], runtime_env: Dict[str, str]) -> None:
+    creation_flags = 0
+    if os.name == "nt":
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    with open(os.devnull, "w", encoding="utf-8", errors="ignore") as devnull:
+        subprocess.Popen(
+            command,
+            cwd=str(NAPCAT_DIR),
+            env=runtime_env,
+            stdout=devnull,
+            stderr=devnull,
+            stdin=subprocess.DEVNULL,
+            creationflags=creation_flags,
+        )
+
+
+def start_napcat_v2(env: Dict[str, str], mode: str) -> bool:
+    ensure_napcat_http_server_config(env)
+    qq_path = env.get("QQ_PATH", "")
+    runtime_env = build_napcat_runtime_env_v2(env, mode)
+
+    launchers = find_napcat_launchers()
+    if not launchers:
+        expected = ", ".join(NAPCAT_LAUNCHER_NAMES)
+        print(f"[ERROR] no napcat launcher found: {expected}")
+        return False
+
+    api_bases = build_napcat_api_bases(env)
+    ports = [p for p in (parse_port_from_api_base(base) for base in api_bases) if p]
+
+    attempts: list[tuple[str, list[str], int]] = []
+    for launcher in launchers:
+        attempts.append((launcher.name, ["cmd", "/c", str(launcher)], 60))
+
+    boot = NAPCAT_DIR / "NapCatWinBootMain.exe"
+    inject = NAPCAT_DIR / "NapCatWinBootHook.dll"
+    if boot.exists() and inject.exists() and qq_path:
+        attempts.append(("NapCatWinBootMain.exe", [str(boot), qq_path, str(inject)], 60))
+
+    print("\n[INFO] starting NapCat ...")
+    opened = False
+    for index, (name, command, timeout_seconds) in enumerate(attempts, start=1):
+        print(f"[INFO] try launcher {index}/{len(attempts)}: {name}")
+        spawn_napcat_process_v2(command, runtime_env)
+        if wait_for_any_port("127.0.0.1", ports, timeout=timeout_seconds):
+            opened = True
+            break
+        print(f"[WARN] {name} timeout, try next launcher ...")
+
+    if not opened:
+        print("[ERROR] OneBot port not opened")
+        print("[HINT] check QQ login status, QQ_PATH, and NapCat injection")
+        return False
+
+    api_result, detected_base = check_napcat_api_candidates(env)
+    if not api_result.ok:
+        print(f"[ERROR] port opened but API unavailable: {api_result.detail}")
+        return False
+
+    maybe_update_napcat_api_base(env, detected_base)
+    print(f"[INFO] NapCat ready: {detected_base}")
+    return True
+
+
 def start_main() -> int:
     if not MAIN_SCRIPT.exists():
         print(f"[失败] 主程序不存在: {MAIN_SCRIPT}")
@@ -632,7 +735,7 @@ def one_click_start() -> int:
     api_result, detected_base = check_napcat_api_candidates(env)
     if not api_result.ok:
         mode = choose_login_mode()
-        if not start_napcat(env, mode):
+        if not start_napcat_v2(env, mode):
             print("\nNapCat ???????????????")
             return 1
     else:
