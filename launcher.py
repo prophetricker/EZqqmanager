@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import socket
 import subprocess
@@ -15,7 +16,12 @@ BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Pat
 ENV_PATH = BASE_DIR / ".env"
 ENV_EXAMPLE_PATH = BASE_DIR / ".env.example"
 NAPCAT_DIR = BASE_DIR / "napcat"
-NAPCAT_START_BAT = NAPCAT_DIR / "start.bat"
+NAPCAT_LAUNCHER_NAMES = (
+    "start.bat",
+    "launch.bat",
+    "launcher-user.bat",
+    "launcher.bat",
+)
 MAIN_SCRIPT = BASE_DIR / "main.py"
 
 DEFAULTS: Dict[str, str] = {
@@ -167,6 +173,111 @@ def wait_for_port(host: str, port: int, timeout: int) -> bool:
     return False
 
 
+def wait_for_any_port(host: str, ports: list[int], timeout: int) -> bool:
+    if not ports:
+        return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for port in ports:
+            try:
+                with socket.create_connection((host, port), timeout=1):
+                    return True
+            except OSError:
+                continue
+        time.sleep(1)
+    return False
+
+
+def parse_port_from_api_base(api_base: str) -> int | None:
+    value = (api_base or "").strip().rstrip("/")
+    if not value:
+        return None
+    host_part = value
+    if "://" in host_part:
+        host_part = host_part.split("://", 1)[1]
+    host_part = host_part.split("/", 1)[0]
+    if ":" not in host_part:
+        return None
+    port_text = host_part.rsplit(":", 1)[1]
+    if not port_text.isdigit():
+        return None
+    return int(port_text)
+
+
+def find_napcat_launcher() -> Path | None:
+    for name in NAPCAT_LAUNCHER_NAMES:
+        candidate = NAPCAT_DIR / name
+        if candidate.exists():
+            return candidate
+    bat_files = sorted(NAPCAT_DIR.glob("*.bat"))
+    if bat_files:
+        return bat_files[0]
+    return None
+
+
+def discover_napcat_ports_from_config() -> list[int]:
+    config_dir = NAPCAT_DIR / "config"
+    if not config_dir.exists():
+        return []
+
+    ports: list[int] = []
+    for file_path in sorted(config_dir.glob("onebot11*.json")):
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        network = data.get("network", {})
+        servers = network.get("httpServers", [])
+        if not isinstance(servers, list):
+            continue
+        for item in servers:
+            if not isinstance(item, dict):
+                continue
+            if item.get("enable") is False:
+                continue
+            port = item.get("port")
+            if isinstance(port, int) and 1 <= port <= 65535 and port not in ports:
+                ports.append(port)
+
+    return ports
+
+
+def build_napcat_api_bases(env: Dict[str, str]) -> list[str]:
+    bases: list[str] = []
+
+    def add(base: str) -> None:
+        value = (base or "").strip().rstrip("/")
+        if value and value not in bases:
+            bases.append(value)
+
+    add(env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"]))
+
+    for port in discover_napcat_ports_from_config():
+        add(f"http://127.0.0.1:{port}")
+
+    # fallback common OneBot ports
+    for port in (3000, 3001):
+        add(f"http://127.0.0.1:{port}")
+
+    return bases
+
+
+def normalize_api_base(api_base: str) -> str:
+    return (api_base or "").strip().rstrip("/")
+
+
+def maybe_update_napcat_api_base(env: Dict[str, str], detected_base: str) -> None:
+    if not detected_base:
+        return
+    current = normalize_api_base(env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"]))
+    target = normalize_api_base(detected_base)
+    if not target or current == target:
+        return
+    save_env_value("NAPCAT_API_BASE", target)
+    env["NAPCAT_API_BASE"] = target
+    print(f"[提示] 已自动更新 NAPCAT_API_BASE -> {target}")
+
+
 def check_required_env(env: Dict[str, str]) -> CheckResult:
     missing = [key for key in REQUIRED_KEYS if not env.get(key)]
     if missing:
@@ -256,30 +367,54 @@ def check_bitable_access(env: Dict[str, str], token: str) -> CheckResult:
 
 def check_napcat_files() -> CheckResult:
     if not NAPCAT_DIR.exists():
-        return CheckResult(False, "NapCat 文件", f"目录不存在: {NAPCAT_DIR}")
-    required = [NAPCAT_START_BAT, NAPCAT_DIR / "napcat.mjs", NAPCAT_DIR / "NapCatWinBootMain.exe"]
-    missing = [str(item) for item in required if not item.exists()]
-    if missing:
-        return CheckResult(False, "NapCat 文件", "缺少文件: " + "; ".join(missing))
-    return CheckResult(True, "NapCat 文件", "通过")
+        return CheckResult(False, "NapCat ??", f"?????: {NAPCAT_DIR}")
 
+    launcher = find_napcat_launcher()
+    if launcher is None:
+        expected = ", ".join(NAPCAT_LAUNCHER_NAMES)
+        return CheckResult(False, "NapCat ??", f"???????????: {expected}")
+
+    runtime_markers = [
+        NAPCAT_DIR / "napcat.mjs",
+        NAPCAT_DIR / "NapCatWinBootMain.exe",
+        NAPCAT_DIR / "package.json",
+    ]
+    if not any(item.exists() for item in runtime_markers):
+        marker_names = ", ".join(item.name for item in runtime_markers)
+        return CheckResult(False, "NapCat ??", f"?????????????: {marker_names}")
+
+    return CheckResult(True, "NapCat ??", f"???????: {launcher.name}?")
 
 def check_napcat_api(api_base: str) -> CheckResult:
     url = api_base.rstrip("/") + "/get_login_info"
     try:
         resp = requests.post(url, json={}, timeout=5)
     except requests.exceptions.RequestException as exc:
-        return CheckResult(False, "NapCat API", f"未连通: {exc}")
+        return CheckResult(
+            False,
+            "NapCat API",
+            f"{api_base.rstrip('/')} ????????? NapCat ?????: {exc}",
+        )
 
     if resp.status_code != 200:
         return CheckResult(False, "NapCat API", f"HTTP={resp.status_code}, body={resp.text[:180]}")
 
     body = (resp.text or "").strip()
     if not body:
-        return CheckResult(False, "NapCat API", "HTTP 200 但返回体为空")
+        return CheckResult(False, "NapCat API", "HTTP 200 ??????")
 
-    return CheckResult(True, "NapCat API", "连通")
+    return CheckResult(True, "NapCat API", f"???{api_base.rstrip('/')}?")
 
+def check_napcat_api_candidates(env: Dict[str, str]) -> Tuple[CheckResult, str]:
+    errors: list[str] = []
+    for base in build_napcat_api_bases(env):
+        result = check_napcat_api(base)
+        if result.ok:
+            return result, normalize_api_base(base)
+        errors.append(f"{normalize_api_base(base)} -> {result.detail}")
+
+    detail = " | ".join(errors[:3]) if errors else "???? API ????"
+    return CheckResult(False, "NapCat API", detail), ""
 
 def print_results(results: list[CheckResult]) -> bool:
     print("\n--- 自检结果 ---")
@@ -309,12 +444,11 @@ def run_doctor(env: Dict[str, str], include_napcat_api: bool = True) -> Tuple[bo
     results.append(check_napcat_files())
 
     if include_napcat_api:
-        api_base = env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"])
-        results.append(check_napcat_api(api_base))
+        api_result, _ = check_napcat_api_candidates(env)
+        results.append(api_result)
 
     ok = print_results(results)
     return ok, token
-
 
 def choose_login_mode() -> str:
     print("\n请选择登录方式:")
@@ -330,13 +464,6 @@ def choose_login_mode() -> str:
 
 def start_napcat(env: Dict[str, str], mode: str) -> bool:
     qq_path = env.get("QQ_PATH", "")
-    api_base = env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"])
-    host = "127.0.0.1"
-    port = 3000
-    try:
-        port = int(api_base.rsplit(":", 1)[1])
-    except Exception:
-        pass
 
     runtime_env = os.environ.copy()
     runtime_env["QQ_PATH"] = qq_path
@@ -350,29 +477,39 @@ def start_napcat(env: Dict[str, str], mode: str) -> bool:
 
     load_js = NAPCAT_DIR / "loadNapCat.js"
     napcat_mjs = NAPCAT_DIR / "napcat.mjs"
-    load_js.write_text(f"(async () => {{await import('file:///{napcat_mjs.as_posix()}')}})()\n", encoding="utf-8")
+    if napcat_mjs.exists():
+        load_js.write_text(f"(async () => {{await import('file:///{napcat_mjs.as_posix()}')}})()\n", encoding="utf-8")
 
-    print("\n启动 NapCat ...")
-    subprocess.Popen(["cmd", "/c", str(NAPCAT_START_BAT)], cwd=str(NAPCAT_DIR), env=runtime_env)
-
-    print("等待 NapCat OneBot 接口就绪（最多 120 秒）...")
-    if not wait_for_port(host, port, timeout=120):
-        print("[失败] 120 秒内未等到端口监听。")
-        print("建议检查：QQ 是否崩溃、NapCat 版本是否匹配、是否被安全软件拦截。")
+    launcher = find_napcat_launcher()
+    if launcher is None:
+        expected = ", ".join(NAPCAT_LAUNCHER_NAMES)
+        print(f"[??] ??? NapCat ?????????: {expected}")
         return False
 
-    api_result = check_napcat_api(api_base)
+    print("\n?? NapCat ...")
+    subprocess.Popen(["cmd", "/c", str(launcher)], cwd=str(NAPCAT_DIR), env=runtime_env)
+
+    api_bases = build_napcat_api_bases(env)
+    ports = [p for p in (parse_port_from_api_base(base) for base in api_bases) if p]
+
+    print("?? NapCat OneBot ??????? 120 ??...")
+    if not wait_for_any_port("127.0.0.1", ports, timeout=120):
+        print("[??] 120 ????? OneBot ?????")
+        print("?????QQ ?????NapCat ?????????????????")
+        return False
+
+    api_result, detected_base = check_napcat_api_candidates(env)
     if not api_result.ok:
-        print(f"[警告] 端口已开但未登录完成：{api_result.detail}")
+        print(f"[??] ????? API ?????{api_result.detail}")
         if mode == "3":
             qr_path = NAPCAT_DIR / "cache" / "qrcode.png"
-            print(f"请扫码登录。二维码路径（若存在）：{qr_path}")
-        print("你可以继续等待登录完成后再启动主程序。")
+            print(f"?????????????????{qr_path}")
+        print("???????????????????")
         return False
 
-    print("NapCat 已就绪。")
+    maybe_update_napcat_api_base(env, detected_base)
+    print(f"NapCat ????{detected_base}??")
     return True
-
 
 def start_main() -> int:
     if not MAIN_SCRIPT.exists():
@@ -389,30 +526,29 @@ def one_click_start() -> int:
 
     cfg_result = check_required_env(env)
     if not cfg_result.ok:
-        print(f"\n[提示] 当前配置不完整：{cfg_result.detail}")
-        answer = input("是否现在进入配置向导？(Y/n): ").strip().lower()
+        print(f"\n[??] ????????{cfg_result.detail}")
+        answer = input("???????????(Y/n): ").strip().lower()
         if answer not in {"", "y", "yes"}:
             return 1
         env = run_setup_wizard(env)
 
-    print("\n先做启动前自检...")
+    print("\n???????...")
     ok, _ = run_doctor(env, include_napcat_api=False)
     if not ok:
-        print("\n自检未通过，请修复后重试。")
+        print("\n?????????????")
         return 1
 
-    api_base = env.get("NAPCAT_API_BASE", DEFAULTS["NAPCAT_API_BASE"])
-    api_result = check_napcat_api(api_base)
+    api_result, detected_base = check_napcat_api_candidates(env)
     if not api_result.ok:
         mode = choose_login_mode()
         if not start_napcat(env, mode):
-            print("\nNapCat 尚未完成登录，暂不启动主程序。")
+            print("\nNapCat ???????????????")
             return 1
     else:
-        print("\n检测到 NapCat 已在线，跳过登录步骤。")
+        maybe_update_napcat_api_base(env, detected_base)
+        print(f"\n??? NapCat ????{detected_base}?????????")
 
     return start_main()
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="EZqqmanager launcher")
