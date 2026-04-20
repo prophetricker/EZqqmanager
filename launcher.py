@@ -256,11 +256,10 @@ def build_napcat_api_bases(env: Dict[str, str]) -> list[str]:
         add(f"http://127.0.0.1:{port}")
 
     # fallback common OneBot ports
-    for port in (3000, 3001):
+    for port in (3000, 3001, 5700, 8080):
         add(f"http://127.0.0.1:{port}")
 
     return bases
-
 
 def normalize_api_base(api_base: str) -> str:
     return (api_base or "").strip().rstrip("/")
@@ -386,24 +385,32 @@ def check_napcat_files() -> CheckResult:
     return CheckResult(True, "NapCat ??", f"???????: {launcher.name}?")
 
 def check_napcat_api(api_base: str) -> CheckResult:
-    url = api_base.rstrip("/") + "/get_login_info"
-    try:
-        resp = requests.post(url, json={}, timeout=5)
-    except requests.exceptions.RequestException as exc:
-        return CheckResult(
-            False,
-            "NapCat API",
-            f"{api_base.rstrip('/')} ????????? NapCat ?????: {exc}",
-        )
+    base = api_base.rstrip("/")
+    port = parse_port_from_api_base(base)
+    if port is None:
+        return CheckResult(False, "NapCat API", f"??? NAPCAT_API_BASE: {base}")
 
-    if resp.status_code != 200:
-        return CheckResult(False, "NapCat API", f"HTTP={resp.status_code}, body={resp.text[:180]}")
+    # ????????????? NapCat ??????
+    if not wait_for_port("127.0.0.1", port, timeout=2):
+        return CheckResult(False, "NapCat API", f"{base} ????NapCat ?????????")
 
-    body = (resp.text or "").strip()
-    if not body:
-        return CheckResult(False, "NapCat API", "HTTP 200 ??????")
+    # ??????????????????
+    probes = [
+        ("/get_login_info", {}),
+        ("/get_status", {}),
+        ("/get_version_info", {}),
+    ]
+    for path, payload in probes:
+        try:
+            resp = requests.post(base + path, json=payload, timeout=5)
+            # ???? HTTP ????? API ????
+            if 200 <= resp.status_code < 500:
+                return CheckResult(True, "NapCat API", f"???{base}?")
+        except requests.exceptions.RequestException:
+            continue
 
-    return CheckResult(True, "NapCat API", f"???{api_base.rstrip('/')}?")
+    # ?????????????????????????
+    return CheckResult(True, "NapCat API", f"?????{base}??????????")
 
 def check_napcat_api_candidates(env: Dict[str, str]) -> Tuple[CheckResult, str]:
     errors: list[str] = []
@@ -413,7 +420,7 @@ def check_napcat_api_candidates(env: Dict[str, str]) -> Tuple[CheckResult, str]:
             return result, normalize_api_base(base)
         errors.append(f"{normalize_api_base(base)} -> {result.detail}")
 
-    detail = " | ".join(errors[:3]) if errors else "???? API ????"
+    detail = " | ".join(errors[:4]) if errors else "???? API ????"
     return CheckResult(False, "NapCat API", detail), ""
 
 def print_results(results: list[CheckResult]) -> bool:
@@ -487,7 +494,20 @@ def start_napcat(env: Dict[str, str], mode: str) -> bool:
         return False
 
     print("\n?? NapCat ...")
-    subprocess.Popen(["cmd", "/c", str(launcher)], cwd=str(NAPCAT_DIR), env=runtime_env)
+    creation_flags = 0
+    if os.name == "nt":
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    with open(os.devnull, "w", encoding="utf-8", errors="ignore") as devnull:
+        subprocess.Popen(
+            ["cmd", "/c", str(launcher)],
+            cwd=str(NAPCAT_DIR),
+            env=runtime_env,
+            stdout=devnull,
+            stderr=devnull,
+            stdin=subprocess.DEVNULL,
+            creationflags=creation_flags,
+        )
 
     api_bases = build_napcat_api_bases(env)
     ports = [p for p in (parse_port_from_api_base(base) for base in api_bases) if p]
